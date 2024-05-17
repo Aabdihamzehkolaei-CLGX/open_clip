@@ -6,6 +6,7 @@ import os
 import random
 import sys
 import braceexpand
+import lmdb, pickle
 from dataclasses import dataclass
 from multiprocessing import Value
 
@@ -25,7 +26,71 @@ try:
 except ImportError:
     hvd = None
 
+class lmdb_multi(Dataset):
+    def __init__(self, input_filename, transforms, emb_key, caption_key, tokenizer=None):
+        self.db_path = '/mnt/disks/multi_mls/database/mylmdb'
+        self.df = pd.read_pickle(input_filename) 
+        self.df['just_imagelink1'] = self.df['just_imagelink1'].astype('category')
+        unique = self.df.drop_duplicates(subset = 'just_imagelink1')
+        self.envids = unique['just_imagelink1'].tolist()
+        self.image_dict = self.df.groupby('just_imagelink1')['filename'].apply(list).to_dict()
+        self.env = None
+        self.txn = None
 
+    def _init_db(self):
+        self.env = lmdb.open(self.db_path,
+            readonly=True, lock=False,
+            readahead=False, meminit=False)
+        self.txn = self.env.begin(write=False)
+        
+    def read_lmdb(self, key):
+        lmdb_data = self.txn.get(key.encode())
+        lmdb_data = pickle.loads(lmdb_data)
+
+        return lmdb_data
+    
+    def __len__(self):
+        return len(self.envids)
+
+    def __getitem__(self, idx):
+        if self.env is None:
+            self._init_db()
+        filenames = self.image_dict[self.envids[idx]]
+        np.random.shuffle(filenames)
+        preprocessed_images = [torch.tensor(self.read_lmdb(filename).embedding) for filename in filenames[:40]]
+        images_tensor = torch.stack(preprocessed_images)
+        import torch.nn.functional as F
+        padding_size = 40 - images_tensor.size(0)
+        if padding_size > 0:
+            images_tensor = F.pad(images_tensor, (0, 0, 0, padding_size), 'constant', 0)
+        target = self.read_lmdb(self.envids[idx]).publicremarks
+        return images_tensor, target
+
+
+class PrecomputedDataset(Dataset):
+    def __init__(self, input_filename, transforms, emb_key, caption_key, tokenizer=None):
+        logging.debug(f'Loading pickle data from {input_filename}.')
+        df = pd.read_pickle(input_filename)
+
+        self.embeddings = df[emb_key].tolist()
+        self.captions = df[caption_key].tolist()
+        self.transforms = transforms
+        self.tokenize = tokenizer
+        logging.debug('Done loading data.')
+
+    def __len__(self):
+        return len(self.captions)
+
+    def __getitem__(self, idx):
+        embeddings = torch.tensor(self.embeddings[idx][:40])
+        texts = self.tokenize([str(self.captions[idx])])[0]
+        import torch.nn.functional as F
+        padding_size = 40 - embeddings.size(0)
+        if padding_size > 0:
+            embeddings = F.pad(embeddings, (0, 0, 0, padding_size), 'constant', 0)
+        # print(embeddings.shape, 'embeddings shape')
+        return embeddings, texts
+    
 class CsvDataset(Dataset):
     def __init__(self, input_filename, transforms, img_key, caption_key, sep="\t", tokenizer=None):
         logging.debug(f'Loading csv data from {input_filename}.')
@@ -442,6 +507,32 @@ def get_wds_dataset(args, preprocess_img, is_train, epoch=0, floor=False, tokeni
 
     return DataInfo(dataloader=dataloader, shared_epoch=shared_epoch)
 
+def get_precomputed_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
+    input_filename = args.train_data if is_train else args.val_data
+    assert input_filename
+    dataset = PrecomputedDataset(
+        input_filename,
+        preprocess_fn,
+        emb_key=args.csv_img_key,
+        caption_key=args.csv_caption_key,
+        tokenizer=tokenizer)
+    num_samples = len(dataset)
+    sampler = DistributedSampler(dataset) if args.distributed and is_train else None
+    shuffle = is_train and sampler is None
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=shuffle,
+        num_workers=args.workers,
+        pin_memory=True,
+        sampler=sampler,
+        drop_last=is_train,
+    )
+    dataloader.num_samples = num_samples
+    dataloader.num_batches = len(dataloader)
+
+    return DataInfo(dataloader, sampler)
 
 def get_csv_dataset(args, preprocess_fn, is_train, epoch=0, tokenizer=None):
     input_filename = args.train_data if is_train else args.val_data
@@ -536,6 +627,8 @@ def get_dataset_fn(data_path, dataset_type):
             return get_csv_dataset
         elif ext in ['tar']:
             return get_wds_dataset
+        elif ext in ['pkl']:
+            return get_precomputed_dataset
         else:
             raise ValueError(
                 f"Tried to figure out dataset type, but failed for extension {ext}.")

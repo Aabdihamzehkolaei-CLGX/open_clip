@@ -31,7 +31,7 @@ def _natural_key(string_):
 
 def _rescan_model_configs():
     global _MODEL_CONFIGS
-
+    print('Rescanning model configs #########################@@@@@@@@@@@@@@@@@#######################')
     config_ext = ('.json',)
     config_files = []
     for config_path in _MODEL_CONFIG_PATHS:
@@ -67,6 +67,8 @@ def add_model_config(path):
 
 
 def get_model_config(model_name):
+    print('Getting model config #########################@@@@@@@@@@@@@@@@@#######################')
+    _rescan_model_configs()
     if model_name in _MODEL_CONFIGS:
         return deepcopy(_MODEL_CONFIGS[model_name])
     else:
@@ -180,6 +182,7 @@ def create_model(
         require_pretrained: bool = False,
         **model_kwargs,
 ):
+    print('Creating model #########################@@@@@@@@@@@@@@@@@#######################')
     force_preprocess_cfg = force_preprocess_cfg or {}
     preprocess_cfg = asdict(PreprocessCfg())
     has_hf_hub_prefix = model_name.startswith(HF_HUB_PREFIX)

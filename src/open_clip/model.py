@@ -21,7 +21,7 @@ from .timm_model import TimmModel
 from .transformer import LayerNormFp32, LayerNorm, QuickGELU, Attention, VisionTransformer, TextTransformer,\
     text_global_pool
 from .utils import to_2tuple
-
+from .myVIT import Vit_custom
 
 @dataclass
 class CLIPVisionCfg:
@@ -233,8 +233,11 @@ class CLIP(nn.Module):
     ):
         super().__init__()
         self.output_dict = output_dict
-
-        self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
+        print('@@@####@@@', vision_cfg)
+        if vision_cfg['Vit_custom']:
+            self.visual = Vit_custom(num_layers=12, num_heads=8, hidden_dim=512, mlp_dim = 2024, dropout=0.1, attention_dropout=0.1)
+        else:
+            self.visual = _build_vision_tower(embed_dim, vision_cfg, quick_gelu, cast_dtype)
 
         text = _build_text_tower(embed_dim, text_cfg, quick_gelu, cast_dtype)
         self.transformer = text.transformer
